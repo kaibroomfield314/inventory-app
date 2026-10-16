@@ -11,6 +11,8 @@
     <OutputPath>.</OutputPath>
     <Name>InventoryWebApp</Name>
     <RootNamespace>InventoryWebApp</RootNamespace>
+    <SuppressEnvironmentCreationPrompt>True</SuppressEnvironmentCreationPrompt>
+    <TestFramework>Pytest</TestFramework>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
