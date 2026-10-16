@@ -1,0 +1,208 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  SWE40006 inventory app - one environment (EC2 Docker host + private RDS Postgres).
+  Deployed once per environment so staging and production are identical apart from data.
+
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@2
+  com.aws.cloudformation.Context:
+    arch: GitHub Actions -> SSH -> docker run on EC2; app container -> RDS in same VPC; container logs -> CloudWatch via awslogs driver
+    must:
+      - log group name /swe40006/<env>/app is hardcoded in deploy.yml and monitoring.yml
+      - one stack per EnvironmentName; names are derived from it, so two stacks with same env collide
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    AllowedValues: [staging, production]
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+  SshCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: Who may SSH in. GitHub-hosted runners have changing IPs, so this stays open and key-only.
+  InstanceType:
+    Type: String
+    Default: t3.micro
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Resources:
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: public web on 80 (it's a public catalogue); SSH for GitHub Actions deploy, key-only auth
+        must:
+          - port 80 open to world, else site unreachable
+          - DBSecurityGroup ingress references this SG; don't replace without updating it
+        gaps:
+          - SSH open because GH-hosted runner IPs vary; SSM Run Command via GH OIDC would allow closing 22
+    Properties:
+      GroupDescription: !Sub ${EnvironmentName} app server
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 }
+        - { IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: !Ref SshCidr }
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: DB reachable only from this env's app server; no CIDR ingress at all
+        must:
+          - never add CIDR ingress; report relies on DB being unreachable from internet
+    Properties:
+      GroupDescription: !Sub ${EnvironmentName} database - app server only
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !GetAtt AppSecurityGroup.GroupId
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: CloudWatchAgentServerPolicy covers agent metrics + docker awslogs driver (CreateLogStream/PutLogEvents); SSM core enables Session Manager as SSH fallback
+        must:
+          - keep logs write perms, else docker run --log-driver awslogs fails and deploy breaks
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  AppLogGroup:
+    Type: AWS::Logs::LogGroup
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: app container stdout (JSON access log) lands here; monitoring stack builds latency/5xx metrics from it
+        must:
+          - name must stay /swe40006/<env>/app (deploy.yml + monitoring.yml depend on it)
+        mutable: change-with-constraints
+        mutability:
+          LogGroupName: must-never-change
+    Properties:
+      LogGroupName: !Sub /swe40006/${EnvironmentName}/app
+      RetentionInDays: 14
+
+  DBSecret:
+    Type: AWS::SecretsManager::Secret
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: generated master pw so no human picks/types it; punctuation excluded because pw is embedded in a postgres URL
+        must:
+          - "keep ExcludePunctuation true; @ / : ? break DATABASE_URL"
+          - rotating pw requires updating DATABASE_URL GitHub env secret too
+    Properties:
+      Name: !Sub swe40006/${EnvironmentName}/db
+      Description: !Sub Master credentials for the ${EnvironmentName} inventory database
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "inventory"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludePunctuation: true
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W3691 # major-only "16" is valid; RDS picks the region's default 16.x minor
+      com.aws.cloudformation.Context:
+        why: managed postgres outside the container per brief; Delete policy because data is fabricated seed data and stacks are torn down after marking (Retain/Snapshot would keep billing)
+        must:
+          - PubliclyAccessible false
+          - DBName & MasterUsername are baked into DATABASE_URL secrets; changing them breaks the app
+        mutable: change-with-constraints
+        mutability:
+          DBInstanceIdentifier: must-never-change
+          DBName: must-never-change
+          MasterUsername: must-never-change
+          StorageEncrypted: must-never-change
+    Properties:
+      DBInstanceIdentifier: !Sub swe40006-${EnvironmentName}-db
+      Engine: postgres
+      EngineVersion: "16"
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: "20"
+      StorageType: gp3
+      StorageEncrypted: true
+      DBName: inventory
+      MasterUsername: !Sub "{{resolve:secretsmanager:${DBSecret}:SecretString:username}}"
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${DBSecret}:SecretString:password}}"
+      VPCSecurityGroups: [!GetAtt DBSecurityGroup.GroupId]
+      PubliclyAccessible: false
+      MultiAZ: false
+      BackupRetentionPeriod: 1
+
+  AppInstance:
+    Type: AWS::EC2::Instance
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: single docker host; AL2023 ships docker, cw agent, psql16 in its repos and defaults to IMDSv2
+        must:
+          - x86_64 AMI; CI builds amd64 images
+          - user data only runs on first boot; editing it later stops/starts the host but does not re-run it
+        ops: AmiId change replaces the instance (new SSM AMI picked up on stack update); EIP follows it, but SSH host key changes and the CW agent must be reinstalled
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfile
+      SecurityGroupIds: [!GetAtt AppSecurityGroup.GroupId]
+      Tags:
+        - { Key: Name, Value: !Sub "swe40006-${EnvironmentName}" }
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+          dnf update -y
+          dnf install -y docker amazon-cloudwatch-agent postgresql16
+          systemctl enable --now docker
+          usermod -aG docker ec2-user
+          mkdir -p /opt/inventory
+          chown ec2-user:ec2-user /opt/inventory
+          echo "${EnvironmentName}" > /opt/inventory/ENVIRONMENT
+
+  AppEIP:
+    Type: AWS::EC2::EIP
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: fixed address survives stop/start, so APP_HOST GitHub variable never changes
+        must:
+          - APP_HOST env variable in GitHub must match this IP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref AppInstance
+
+Outputs:
+  PublicIP:
+    Value: !Ref AppEIP
+  DatabaseEndpoint:
+    Value: !GetAtt Database.Endpoint.Address
+  DatabaseSecretArn:
+    Value: !Ref DBSecret
+  InstanceId:
+    Value: !Ref AppInstance
+  LogGroup:
+    Value: !Ref AppLogGroup
