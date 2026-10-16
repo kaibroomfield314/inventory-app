@@ -1,0 +1,206 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  SWE40006 monitoring for one environment - turns the app's JSON access log into latency/request/5xx
+  metrics and adds alarms, an SNS email topic and a dashboard, so monitoring is recreatable as code.
+
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@2
+  com.aws.cloudformation.Context:
+    arch: app access log (JSON, type=access) -> metric filters -> SWE40006/<env> namespace; EC2 + CWAgent metrics -> alarms -> SNS email
+    must:
+      - log group /swe40006/<env>/app must already exist (created by the environment stack)
+      - app must keep emitting JSON lines with type, status, latency_ms fields
+    deps:
+      - swe40006-<env> environment stack (InstanceId output, log group)
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    AllowedValues: [staging, production]
+  InstanceId:
+    Type: AWS::EC2::Instance::Id
+  AlertEmail:
+    Type: String
+
+Resources:
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: email fan-out for every alarm; extra team members subscribed by hand in SNS console
+        must:
+          - no SSE with alias/aws/sns; CloudWatch alarms can't use that key, so alerts silently fail (needs a CMK if encryption wanted)
+        ops: each subscriber must click the confirmation email before alerts arrive
+    Properties:
+      TopicName: !Sub swe40006-${EnvironmentName}-alerts
+      Subscription:
+        - { Protocol: email, Endpoint: !Ref AlertEmail }
+
+  LatencyMetric:
+    Type: AWS::Logs::MetricFilter
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: HTTP latency isn't an EC2 metric; derived from app's after_request JSON log line
+        must:
+          - field names match app/__init__.py access log (latency_ms)
+    Properties:
+      LogGroupName: !Sub /swe40006/${EnvironmentName}/app
+      FilterPattern: '{ $.type = "access" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub SWE40006/${EnvironmentName}
+          MetricName: HttpLatencyMs
+          MetricValue: $.latency_ms
+          Unit: Milliseconds
+
+  RequestCountMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Sub /swe40006/${EnvironmentName}/app
+      FilterPattern: '{ $.type = "access" }'
+      MetricTransformations:
+        - MetricNamespace: !Sub SWE40006/${EnvironmentName}
+          MetricName: RequestCount
+          MetricValue: "1"
+          DefaultValue: 0
+          Unit: Count
+
+  ServerErrorMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Sub /swe40006/${EnvironmentName}/app
+      FilterPattern: '{ $.type = "access" && $.status >= 500 }'
+      MetricTransformations:
+        - MetricNamespace: !Sub SWE40006/${EnvironmentName}
+          MetricName: Http5xxCount
+          MetricValue: "1"
+          DefaultValue: 0
+          Unit: Count
+
+  HighCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub swe40006-${EnvironmentName}-high-cpu
+      AlarmDescription: CPU above 80% for 10 minutes
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions: [{ Name: InstanceId, Value: !Ref InstanceId }]
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+
+  HighMemoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Metadata:
+      com.aws.cloudformation.Context:
+        must:
+          - needs CW agent running with infra/cloudwatch-agent.json (InstanceId aggregation), else no data
+    Properties:
+      AlarmName: !Sub swe40006-${EnvironmentName}-high-memory
+      AlarmDescription: Memory above 85% for 10 minutes
+      Namespace: CWAgent
+      MetricName: mem_used_percent
+      Dimensions: [{ Name: InstanceId, Value: !Ref InstanceId }]
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 85
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+
+  StatusCheckAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: notBreaching on missing data because instances are stopped between work sessions to save cost; a running-but-broken host still reports 1
+    Properties:
+      AlarmName: !Sub swe40006-${EnvironmentName}-status-check
+      AlarmDescription: EC2 instance or system status check failing
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed
+      Dimensions: [{ Name: InstanceId, Value: !Ref InstanceId }]
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+
+  ServerErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub swe40006-${EnvironmentName}-5xx-errors
+      AlarmDescription: 5 or more server errors in 5 minutes
+      Namespace: !Sub SWE40006/${EnvironmentName}
+      MetricName: Http5xxCount
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+
+  HighLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub swe40006-${EnvironmentName}-high-latency
+      AlarmDescription: Average response time above 1 second for 10 minutes
+      Namespace: !Sub SWE40006/${EnvironmentName}
+      MetricName: HttpLatencyMs
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub swe40006-${EnvironmentName}
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            { "type": "metric", "x": 0, "y": 0, "width": 8, "height": 6,
+              "properties": { "title": "CPU utilisation (%)", "region": "${AWS::Region}", "stat": "Average", "period": 300, "view": "timeSeries",
+                "metrics": [[ "AWS/EC2", "CPUUtilization", "InstanceId", "${InstanceId}" ]] } },
+            { "type": "metric", "x": 8, "y": 0, "width": 8, "height": 6,
+              "properties": { "title": "Memory and disk used (%)", "region": "${AWS::Region}", "stat": "Average", "period": 60, "view": "timeSeries",
+                "metrics": [[ "CWAgent", "mem_used_percent", "InstanceId", "${InstanceId}" ],
+                            [ "CWAgent", "disk_used_percent", "InstanceId", "${InstanceId}" ]] } },
+            { "type": "metric", "x": 16, "y": 0, "width": 8, "height": 6,
+              "properties": { "title": "Network traffic (bytes)", "region": "${AWS::Region}", "stat": "Sum", "period": 300, "view": "timeSeries",
+                "metrics": [[ "AWS/EC2", "NetworkIn", "InstanceId", "${InstanceId}" ],
+                            [ "AWS/EC2", "NetworkOut", "InstanceId", "${InstanceId}" ]] } },
+            { "type": "metric", "x": 0, "y": 6, "width": 8, "height": 6,
+              "properties": { "title": "Disk I/O (bytes)", "region": "${AWS::Region}", "stat": "Sum", "period": 300, "view": "timeSeries",
+                "metrics": [[ "AWS/EC2", "EBSReadBytes", "InstanceId", "${InstanceId}" ],
+                            [ "AWS/EC2", "EBSWriteBytes", "InstanceId", "${InstanceId}" ]] } },
+            { "type": "metric", "x": 8, "y": 6, "width": 8, "height": 6,
+              "properties": { "title": "HTTP latency (ms)", "region": "${AWS::Region}", "period": 60, "view": "timeSeries",
+                "metrics": [[ "SWE40006/${EnvironmentName}", "HttpLatencyMs", { "stat": "Average", "label": "Average" } ],
+                            [ "SWE40006/${EnvironmentName}", "HttpLatencyMs", { "stat": "Maximum", "label": "Maximum" } ]] } },
+            { "type": "metric", "x": 16, "y": 6, "width": 8, "height": 6,
+              "properties": { "title": "Requests and 5xx errors", "region": "${AWS::Region}", "stat": "Sum", "period": 60, "view": "timeSeries",
+                "metrics": [[ "SWE40006/${EnvironmentName}", "RequestCount" ],
+                            [ "SWE40006/${EnvironmentName}", "Http5xxCount" ]] } },
+            { "type": "alarm", "x": 0, "y": 12, "width": 8, "height": 6,
+              "properties": { "title": "Alarms", "alarms": [
+                "${HighCpuAlarm.Arn}", "${HighMemoryAlarm.Arn}", "${StatusCheckAlarm.Arn}",
+                "${ServerErrorAlarm.Arn}", "${HighLatencyAlarm.Arn}" ] } },
+            { "type": "log", "x": 8, "y": 12, "width": 16, "height": 6,
+              "properties": { "title": "Recent errors", "region": "${AWS::Region}", "view": "table",
+                "query": "SOURCE '/swe40006/${EnvironmentName}/app' | fields @timestamp, @message | filter status >= 500 or @message like /ERROR|Traceback/ | sort @timestamp desc | limit 20" } }
+          ]
+        }
