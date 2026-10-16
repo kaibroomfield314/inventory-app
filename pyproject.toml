@@ -1,0 +1,10 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["writes: changes data, so runs on staging only"]
+
+[tool.ruff]
+line-length = 110
+extend-exclude = ["migrations"]
+
+[tool.ruff.lint]
+select = ["E", "F", "B"]
