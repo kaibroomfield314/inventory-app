@@ -1,0 +1,169 @@
+name: pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Unit tests with coverage gate
+        run: >
+          pytest tests/unit -q --cov=app --cov-report=term-missing
+          --cov-report=xml --cov-fail-under=70 --junitxml=unit-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-results
+          path: |
+            unit-results.xml
+            coverage.xml
+
+  integration-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: inventory_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://test:test@localhost:5432/inventory_test
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: pytest tests/integration -v --junitxml=integration-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-test-results
+          path: integration-results.xml
+
+  build-and-push:
+    needs: [lint-and-test, integration-test]
+    # only main ships; a manual run from a feature branch stops after the tests
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: meta
+        run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: APP_VERSION=${{ steps.meta.outputs.tag }}
+          tags: |
+            ${{ vars.DOCKERHUB_USERNAME }}/inventory-app:${{ steps.meta.outputs.tag }}
+            ${{ vars.DOCKERHUB_USERNAME }}/inventory-app:latest
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-staging:
+    needs: build-and-push
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: staging
+      image_tag: ${{ needs.build-and-push.outputs.tag }}
+    secrets: inherit
+
+  e2e-staging:
+    needs: [build-and-push, deploy-staging]
+    runs-on: ubuntu-latest
+    env:
+      BASE_URL: ${{ needs.deploy-staging.outputs.url }}
+      EXPECTED_VERSION: ${{ needs.build-and-push.outputs.tag }}
+      E2E_ADMIN_PASSWORD: ${{ secrets.E2E_ADMIN_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: pytest tests/e2e -v --junitxml=e2e-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-staging-results
+          path: e2e-results.xml
+
+  deploy-production:
+    needs: [build-and-push, e2e-staging]
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: production
+      image_tag: ${{ needs.build-and-push.outputs.tag }}
+    secrets: inherit
+
+  verify-production:
+    needs: [build-and-push, deploy-production]
+    runs-on: ubuntu-latest
+    env:
+      BASE_URL: ${{ needs.deploy-production.outputs.url }}
+      EXPECTED_VERSION: ${{ needs.build-and-push.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - name: Read-only acceptance tests against production
+        run: pytest tests/e2e -v -m "not writes"
+
+  release:
+    needs: [build-and-push, verify-production]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_TAG: ${{ needs.build-and-push.outputs.tag }}
+        run: |
+          TAG="release-$(date -u +%Y%m%d-%H%M)-${IMAGE_TAG}"
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --generate-notes \
+            --notes "Deployed image: ${{ vars.DOCKERHUB_USERNAME }}/inventory-app:${IMAGE_TAG}"

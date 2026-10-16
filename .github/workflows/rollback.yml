@@ -1,0 +1,26 @@
+name: rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [staging, production]
+        required: true
+      image_tag:
+        description: Image tag to redeploy, e.g. sha-1a2b3c4 (see Releases or Docker Hub)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: ${{ inputs.environment }}
+      image_tag: ${{ inputs.image_tag }}
+      # older images don't contain newer migration files, so upgrade would fail
+      run_migrations: false
+    secrets: inherit

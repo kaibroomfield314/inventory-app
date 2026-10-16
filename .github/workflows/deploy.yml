@@ -1,0 +1,81 @@
+name: deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      image_tag:
+        required: true
+        type: string
+      run_migrations:
+        required: false
+        type: boolean
+        default: true
+    outputs:
+      url:
+        description: Base URL of the environment just deployed
+        value: ${{ jobs.deploy.outputs.url }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # pipeline and rollback must never swap the same environment's container at once
+    concurrency:
+      group: deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    environment:
+      name: ${{ inputs.environment }}
+      url: http://${{ vars.APP_HOST }}
+    outputs:
+      url: ${{ steps.url.outputs.url }}
+    steps:
+      - id: url
+        run: echo "url=http://${{ vars.APP_HOST }}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy container over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ vars.APP_HOST }}
+          username: ec2-user
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -euo pipefail
+            IMAGE="${{ vars.DOCKERHUB_USERNAME }}/inventory-app:${{ inputs.image_tag }}"
+            cat > /opt/inventory/app.env <<'EOF'
+            DATABASE_URL=${{ secrets.DATABASE_URL }}
+            SECRET_KEY=${{ secrets.SECRET_KEY }}
+            ADMIN_USERNAME=admin
+            ADMIN_PASSWORD_HASH=${{ secrets.ADMIN_PASSWORD_HASH }}
+            APP_ENV=${{ inputs.environment }}
+            EOF
+            chmod 600 /opt/inventory/app.env
+            docker pull "$IMAGE"
+            if [ "${{ inputs.run_migrations }}" = "true" ]; then
+              docker run --rm --env-file /opt/inventory/app.env "$IMAGE" flask db upgrade
+              docker run --rm --env-file /opt/inventory/app.env "$IMAGE" flask seed
+            fi
+            docker rm -f inventory-app 2>/dev/null || true
+            docker run -d --name inventory-app --restart unless-stopped \
+              -p 80:8000 --env-file /opt/inventory/app.env \
+              --log-driver awslogs \
+              --log-opt awslogs-region=${{ vars.AWS_REGION }} \
+              --log-opt awslogs-group=/swe40006/${{ inputs.environment }}/app \
+              "$IMAGE"
+            echo "${{ inputs.image_tag }}" > /opt/inventory/CURRENT_TAG
+            docker image prune -af --filter "until=72h" || true
+
+      - name: Smoke test /health
+        run: |
+          for i in $(seq 1 20); do
+            if body=$(curl -fsS "http://${{ vars.APP_HOST }}/health"); then
+              echo "$body"
+              if echo "$body" | jq -e --arg v "${{ inputs.image_tag }}" \
+                   '.status == "ok" and .database == "ok" and .version == $v' > /dev/null; then
+                echo "Healthy on ${{ inputs.image_tag }}"; exit 0
+              fi
+            fi
+            sleep 6
+          done
+          echo "Smoke test failed"; exit 1
