@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}PC Store Catalogue{% endblock %}</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 960px; margin: 0 auto; padding: 1rem; }
+    .env-banner { background: #f5c542; padding: .5rem; text-align: center; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; }
+    footer { margin-top: 2rem; color: #666; font-size: .85rem; }
+  </style>
+</head>
+<body>
+  {% if app_env != "production" %}<div class="env-banner" id="env-banner">{{ app_env|upper }} environment</div>{% endif %}
+  <header><h1><a href="{{ url_for('catalogue.index') }}">PC Store Catalogue</a></h1></header>
+  {% with messages = get_flashed_messages() %}{% for m in messages %}<p class="flash">{{ m }}</p>{% endfor %}{% endwith %}
+  <main>{% block content %}{% endblock %}</main>
+  <footer id="version">Version {{ app_version }} · {{ app_env }}</footer>
+</body>
+</html>

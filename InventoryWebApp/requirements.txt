@@ -1,0 +1,5 @@
+Flask~=3.1
+Flash-SQLAlchemy~=3.1
+Flask-Migrate~=4.0
+psycopg[binary]~=3.2
+gunicorn~=23.0
