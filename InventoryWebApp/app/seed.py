@@ -20,7 +20,7 @@ def seed_command():
         category = Category(name=category_name)
         db.session.add(category)
         for name, price, stock in items:
-            product = Product(name=name, description=f"{name} – sample listing", stock=stock, category=category)
+            product = Product(name=name, description=f"{name} : sample listing", stock=stock, category=category)
             product.set_price(price)
             db.session.add(product)
     db.session.commit()

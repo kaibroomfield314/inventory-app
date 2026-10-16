@@ -31,6 +31,7 @@
     <Compile Include="app\__init__.py" />
     <Compile Include="config.py" />
     <Compile Include="InventoryWebApp.py" />
+    <Compile Include="migrations\env.py" />
     <Compile Include="tests\conftest.py" />
     <Compile Include="tests\unit\test_health.py" />
     <Compile Include="wsgi.py" />
