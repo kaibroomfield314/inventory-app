@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Product</h2>
+<form method="post">
+  <p>Name <input name="name" id="name" value="{{ product.name or '' }}"></p>
+  <p>Price <input name="price" id="price" value="{{ product.price or '' }}"></p>
+  <p>Stock <input name="stock" id="stock" value="{{ product.stock or 0 }}"></p>
+  <button type="submit" id="save-btn">Save</button>
+  <a href="/admin/">Cancel</a>
+</form>
+{% endblock %}

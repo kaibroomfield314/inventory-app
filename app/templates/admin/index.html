@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Products</h2>
+<p><a href="/admin/products/new">Add product</a> | <a href="/admin/logout">Log out</a></p>
+<table>
+  {% for p in products %}
+  <tr>
+    <td><a href="/admin/products/{{ p.id }}/edit">{{ p.name }}</a></td>
+    <td>${{ p.price }}</td>
+    <td>{{ p.stock }}</td>
+    <td>
+      <form method="post" action="/admin/products/{{ p.id }}/stock" style="display:inline">
+        <button name="change" value="-1">-1</button>
+        <button name="change" value="1">+1</button>
+      </form>
+      <form method="post" action="/admin/products/{{ p.id }}/delete" style="display:inline">
+        <button>Delete</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}
