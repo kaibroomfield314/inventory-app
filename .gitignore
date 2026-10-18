@@ -7,3 +7,4 @@ htmlcov/
 *.pem
 .vs/
 .ssh
+*.db
