@@ -1,5 +1,6 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 markers = ["writes: changes data, so runs on staging only"]
 
 [tool.ruff]
