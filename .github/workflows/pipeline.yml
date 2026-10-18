@@ -1,15 +1,16 @@
 name: pipeline
 
+# every branch push is tested and, if green, deployed to staging; only main goes on to production.
+# no pull_request trigger: the push run's checks sit on the PR head commit and satisfy the ruleset
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    branches: ["**"]
   workflow_dispatch:
 
 concurrency:
   group: pipeline-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # a newer push to a branch supersedes the older run; main runs are never cancelled mid-deploy
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -75,8 +76,6 @@ jobs:
 
   build-and-push:
     needs: [lint-and-test, integration-test]
-    # only main ships; a manual run from a feature branch stops after the tests
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
@@ -94,9 +93,10 @@ jobs:
           context: .
           push: true
           build-args: APP_VERSION=${{ steps.meta.outputs.tag }}
+          # latest only tracks main, so branch builds never become the default image
           tags: |
             ${{ vars.DOCKERHUB_USERNAME }}/inventory-app:${{ steps.meta.outputs.tag }}
-            ${{ vars.DOCKERHUB_USERNAME }}/inventory-app:latest
+            ${{ github.ref == 'refs/heads/main' && format('{0}/inventory-app:latest', vars.DOCKERHUB_USERNAME) || '' }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
@@ -136,6 +136,7 @@ jobs:
 
   deploy-production:
     needs: [build-and-push, e2e-staging]
+    if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/deploy.yml
     with:
       environment: production
