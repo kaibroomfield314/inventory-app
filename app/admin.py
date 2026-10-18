@@ -23,7 +23,6 @@ def logout():
     session.clear()
     return redirect("/")
 
-
 @bp.route("/")
 def index():
     if not session.get("admin"): 
@@ -40,7 +39,6 @@ def edit_product(product_id=None):
         product = db.get_or_404(Product, product_id)
     else:
         product = Product()
-
     if request.method == "POST":
         try:
             product.name = request.form["name"].strip()
@@ -58,3 +56,23 @@ def edit_product(product_id=None):
         return redirect("/admin/")
 
     return render_template("admin/product_form.html", product=product)
+
+@bp.route("/products/<int:product_id>/stock", methods=["POST"])
+def change_stock(product_id):
+    if not session.get("admin"):
+        return redirect("/admin/login")
+    product = db.get_or_404(Product, product_id)
+    product.stock = max(0, product.stock + int(request.form["change"]))
+    db.session.commit()
+    return redirect("/admin/")
+
+
+@bp.route("/products/<int:product_id>/delete", methods=["POST"])
+def delete_product(product_id):
+    if not session.get("admin"):
+        return redirect("/admin/login")
+    product = db.get_or_404(Product, product_id)
+    db.session.delete(product)
+    db.session.commit()
+    flash(f"Deleted {product.name}")
+    return redirect("/admin/")
