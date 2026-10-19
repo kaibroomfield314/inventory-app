@@ -15,6 +15,9 @@
 <body>
   {% if app_env != "production" %}<div class="env-banner" id="env-banner">{{ app_env|upper }} environment</div>{% endif %}
   <header><h1><a href="{{ url_for('catalogue.index') }}">PC Store Catalogue</a></h1></header>
+  {% if request.endpoint == 'catalogue.index' %}
+    <header><h3><a href="{{ url_for('admin.index') }}">Admin Login</a></h3></header>
+  {% endif %}
   {% with messages = get_flashed_messages() %}{% for m in messages %}<p class="flash">{{ m }}</p>{% endfor %}{% endwith %}
   <main>{% block content %}{% endblock %}</main>
   <footer id="version">Version {{ app_version }} · {{ app_env }}</footer>

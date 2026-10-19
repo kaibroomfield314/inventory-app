@@ -23,6 +23,12 @@ def test_login_works(app, client):
     assert response.headers["Location"] == "/admin/"
     assert client.get("/admin/").status_code == 200
 
+def test_admin_login_link_only_appears_on_homepage(app, client):
+    assert b"Admin Login" in client.get("/").data
+
+    login(app, client)
+    assert b"Admin Login" not in client.get("/admin/").data
+
 def test_wrong_password(app, client):
     app.config["ADMIN_PASSWORD_HASH"] = generate_password_hash("secret")
     response = client.post("/admin/login", data={"username": "admin", "password": "wrong"})
