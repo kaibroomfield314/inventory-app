@@ -1,5 +1,6 @@
 .PHONY: setup dev test lint check
 
+admin ?= admin
 DEV_PASSWORD_HASH = $(shell .venv/bin/python -c "from werkzeug.security import generate_password_hash as g; print(g('$(admin)'))")
 
 setup:
