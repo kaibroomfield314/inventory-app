@@ -1,9 +1,10 @@
 .PHONY: setup dev test lint integration check
 
-DEV_PASSWORD_HASH = $(shell .venv/bin/python -c "from werkzeug.security import generate_password_hash as g; print(g('admin'))")
+admin ?= admin
+DEV_PASSWORD_HASH = $(shell .venv/bin/python -c "from werkzeug.security import generate_password_hash as g; print(g('$(admin)'))")
 CI_DB_URL = postgresql+psycopg://test:test@localhost:5433/inventory_test
-
 export PATH := $(CURDIR)/.venv/bin:$(PATH)
+
 
 setup:
 	uv venv --clear -p 3.12 .venv
