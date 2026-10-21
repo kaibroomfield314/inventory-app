@@ -84,10 +84,13 @@ def test_admin_can_login_and_add_product(browser):
     browser.find_element(By.ID, "username").send_keys("admin")
     browser.find_element(By.ID, "password").send_keys(password)
     browser.find_element(By.ID, "login-btn").click()
-    WebDriverWait(browser, 15).until(EC.url_contains("/admin/"))
-    assert browser.find_elements(By.LINK_TEXT, "Add product"), "Admin login failed"
+    # /admin/login already contains "/admin/", so wait for the dashboard itself
+    add_link = WebDriverWait(browser, 15).until(
+        EC.element_to_be_clickable((By.LINK_TEXT, "Add product")),
+        message="Admin login failed",
+    )
 
-    browser.find_element(By.LINK_TEXT, "Add product").click()
+    add_link.click()
     name = f"E2E test product {uuid.uuid4().hex[:8]}"
     browser.find_element(By.ID, "name").send_keys(name)
     browser.find_element(By.ID, "price").send_keys("12.50")
