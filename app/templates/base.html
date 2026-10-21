@@ -14,7 +14,7 @@
 </head>
 <body>
   {% if app_env != "production" %}<div class="env-banner" id="env-banner">{{ app_env|upper }} environment</div>{% endif %}
-  <header><h1><a href="{{ url_for('catalogue.index') }}">PC Store Catalogue test 111111</a></h1></header>
+  <header><h1><a href="{{ url_for('catalogue.index') }}">PC Store Catalogue test 2222</a></h1></header>
   {% if request.endpoint == 'catalogue.index' %}
     <header><h3><a href="{{ url_for('admin.index') }}">Admin Login</a></h3></header>
   {% endif %}
