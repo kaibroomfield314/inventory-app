@@ -27,4 +27,4 @@ integration:
 	TEST_DATABASE_URL=postgresql+psycopg://test:test@localhost:5433/inventory_test .venv/bin/pytest tests/integration -v
 	docker rm -f ci-pg
 
-check: lint test intergration
+check: lint test integration
