@@ -51,6 +51,9 @@ def create_app(config_class=Config):
             "status": response.status_code,
             "latency_ms": round((time.perf_counter() - started) * 1000, 2),
             "version": app.config["APP_VERSION"],
+            # no proxy in front of gunicorn, so remote_addr is the real client
+            "ip": request.remote_addr,
+            "user_agent": request.user_agent.string,
         }))
         return response
 
